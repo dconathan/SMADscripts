@@ -1,0 +1,6 @@
+data/clean
+data/models
+data/output
+data/shared
+data/source
+data/raw/*.txt
