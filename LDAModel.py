@@ -119,7 +119,7 @@ class LDAModel:
             self.corpus = corpus
             self.dictionary = dictionary
 
-    def cleanArticles(self, csv_file='clean_data.csv', source='NYT3_April-June-2012_1-500.txt', by_paragraph=False):
+    def cleanArticles(self, csv_file='clean_data.csv', source='sample', by_paragraph=False):
         '''
         Reads articles from raw source and turns it into a cleaned dataframe, appends to self.dataframe
         If by_paragraph=True, each paragraph gets its own row
@@ -221,7 +221,7 @@ class LDAModel:
         self.corpus = corpus
         savePickle(corpus, os.path.join(self.models, 'corpus.pickle'))
 
-    def trainLDA(self, num_topics=300, use_multicore=False):
+    def trainLDA(self, num_topics=20, use_multicore=False):
         """ Trains LDA model using self.corpus and self.dictionary """
 
         t0 = time.time()
@@ -305,3 +305,10 @@ class LDAModel:
                 full_filename = os.path.join(self.output, 'topic{}_wordcloud.png'.format(i))
                 saveWordCloud(text, full_filename)
         print("Generating wordclouds took {}s".format(time.time() - t0))
+
+if __name__ == '__main__':
+    lda_model = LDAModel()
+    lda_model.cleanArticles()
+    lda_model.process()
+    lda_model.trainLDA()
+    lda_model.sortByTopic()
