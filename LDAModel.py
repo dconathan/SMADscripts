@@ -119,9 +119,9 @@ class LDAModel:
             self.dataframe = pd.DataFrame()
 
         if load_model:
-            self.lda = loadPickle(os.path.join(self.models), 'lda.pickle')
-            self.corpus = loadPickle(os.path.join(self.models), 'corpus.pickle')
-            self.dictionary = loadPickle(os.path.join(self.models), 'dictionary.pickle')
+            self.lda = loadPickle(os.path.join(self.models, 'lda.pickle'))
+            self.corpus = loadPickle(os.path.join(self.models, 'corpus.pickle'))
+            self.dictionary = loadPickle(os.path.join(self.models, 'dictionary.pickle'))
         else:
             self.lda = lda
             self.corpus = corpus
