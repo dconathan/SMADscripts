@@ -13,7 +13,6 @@
 <div class="cell border-box-sizing code_cell rendered">
 <div class="input">
 <div class="inner_cell">
-    <div class="input_area">
 <div class=" highlight hl-ipython3"><pre><span></span><span class="kn">import</span> <span class="nn">LDAModel</span>
 
 <span class="n">LDAModel</span><span class="o">.</span><span class="n">main</span><span class="p">()</span>
@@ -26,15 +25,6 @@
 <div class="output_wrapper">
 <div class="output">
 
-
-<div class="output_area"><div class="prompt"></div>
-<div class="output_subarea output_stream output_stderr output_text">
-<pre>Using gpu device 0: Quadro K620M (CNMeM is enabled with initial size: 95.0% of memory, cuDNN 5103)
-/usr/lib/python3.5/site-packages/theano/sandbox/cuda/__init__.py:600: UserWarning: Your cuDNN version is more recent than the one Theano officially supports. If you see any problems, try updating Theano or downgrading cuDNN to version 5.
-  warnings.warn(warn)
-</pre>
-</div>
-</div>
 
 <div class="output_area"><div class="prompt"></div>
 <div class="output_subarea output_stream output_stdout output_text">
@@ -52,11 +42,6 @@ Sorting articles by topic took 8.089366912841797s
 </div>
 
 <div class="output_area"><div class="prompt"></div>
-<div class="output_subarea output_stream output_stderr output_text">
-<pre>/usr/lib/python3.5/site-packages/PIL/ImageDraw.py:100: UserWarning: setfont() is deprecated. Please set the attribute directly instead.
-  &#34;Please set the attribute directly instead.&#34;)
-</pre>
-</div>
 </div>
 
 <div class="output_area"><div class="prompt"></div>
