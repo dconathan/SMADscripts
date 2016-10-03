@@ -90,7 +90,7 @@ def filter_token(token):
 
 
 class LDAModel:
-    def __init__(self, dataframe=None, base='../data', output='output', lda=None, corpus=None, dictionary=None, load_model=False):
+    def __init__(self, dataframe=None, base='data', output='output', lda=None, corpus=None, dictionary=None, load_model=False):
 
         # Set working directories
         self.base = base
