@@ -25,6 +25,14 @@ with open('stopwords') as f:
 stopwords = set(stopwords)
 
 
+def main():
+    lda_model = LDAModel()
+    lda_model.cleanArticle()
+    lda_model.process()
+    lda_model.trainLDA(use_multicore=True, passes=1)
+    lda_model.sortByTopic()
+
+
 def savePickle(data, filename):
     with open(filename, 'wb') as f:
         pickle.dump(data, f)
@@ -308,8 +316,4 @@ class LDAModel:
         print("Generating wordclouds took {}s".format(time.time() - t0))
 
 if __name__ == '__main__':
-    lda_model = LDAModel()
-    lda_model.cleanArticle()
-    lda_model.process()
-    lda_model.trainLDA(use_multicore=True, passes=1)
-    lda_model.sortByTopic()
+    main()
