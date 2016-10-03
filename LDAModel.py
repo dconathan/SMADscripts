@@ -78,7 +78,7 @@ def tokenize(article, toke=True, filt=True, stem=True):
     return list(tokens)
 
 
-def filter_token(token, stopwords):
+def filter_token(token):
     '''
     Returns False if token should be removed, True otherwise
     '''
@@ -119,7 +119,7 @@ class LDAModel:
             self.corpus = corpus
             self.dictionary = dictionary
 
-    def cleanArticles(self, csv_file='clean_data.csv', source='sample', by_paragraph=False):
+    def cleanArticle(self, csv_file='clean_data.csv', source='sample', by_paragraph=False):
         '''
         Reads articles from raw source and turns it into a cleaned dataframe, appends to self.dataframe
         If by_paragraph=True, each paragraph gets its own row
@@ -164,7 +164,7 @@ class LDAModel:
 
         this_dataframe = pd.DataFrame.from_dict(dict(enumerate(cooked_data)), orient='index')
         this_dataframe.columns = ('source', 'source_index', 'text')
-        self.dataframe.append(this_dataframe)
+        self.dataframe = self.dataframe.append(this_dataframe)
 
     def saveCleanCSV(self):
         ''' Saves self.dataframe as filename self.clean_csv '''
@@ -221,18 +221,18 @@ class LDAModel:
         self.corpus = corpus
         savePickle(corpus, os.path.join(self.models, 'corpus.pickle'))
 
-    def trainLDA(self, num_topics=20, use_multicore=False):
+    def trainLDA(self, num_topics=20, use_multicore=False, passes=8):
         """ Trains LDA model using self.corpus and self.dictionary """
 
         t0 = time.time()
         if use_multicore:
-            lda = LdaMulticore(corpus=self.corpus, num_topics=num_topics, id2word=self.dictionary, workers=3, passes=8)
+            lda = LdaMulticore(corpus=self.corpus, num_topics=num_topics, id2word=self.dictionary, workers=3, passes=passes)
         else:
-            lda = LdaModel(corpus=self.corpus, num_topics=num_topics, id2word=self.dictionary, passes=8, alpha='auto')
+            lda = LdaModel(corpus=self.corpus, num_topics=num_topics, id2word=self.dictionary, passes=passes, alpha='auto')
         print("Training LDA model took {}s".format(time.time() - t0))
 
         self.lda = lda
-        savePickle(lda, '../data/models/lda.pickle')
+        savePickle(lda, os.path.join(self.models, 'lda.pickle'))
 
     def predictTopic(self, article):
         '''
@@ -265,6 +265,7 @@ class LDAModel:
         return max(topics, key=lambda x: x[1])[0]
 
     def sortByTopic(self):
+        ''' Gets most probable topic for each article and outputs a .csv and wordcloud for each topic '''
 
         topic_term_file = os.path.join(self.output, 'topic_terms.txt')
 
@@ -308,7 +309,7 @@ class LDAModel:
 
 if __name__ == '__main__':
     lda_model = LDAModel()
-    lda_model.cleanArticles()
+    lda_model.cleanArticle()
     lda_model.process()
-    lda_model.trainLDA()
+    lda_model.trainLDA(use_multicore=True, passes=1)
     lda_model.sortByTopic()
