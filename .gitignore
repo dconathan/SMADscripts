@@ -1,7 +1,4 @@
-data/clean
-data/models
-data/output
-data/shared
-data/source
-data/raw/*.txt
+data
 README.md.pre
+smad.iml
+.idea
