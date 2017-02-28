@@ -13,6 +13,7 @@ import numpy as np
 import time
 from sklearn.decomposition import PCA
 from sklearn.decomposition import TruncatedSVD
+from sklearn.manifold import TSNE
 import pickle
 from gensim.models.tfidfmodel import TfidfModel
 from gensim.models.word2vec import Word2Vec
@@ -43,7 +44,7 @@ def load_pickle(filename):
     with open(filename, 'rb') as f:
         return pickle.load(f)
 
-
+W2V_MODEL = '/home/devin/smad/guns/news/classification/models/word2vec.pickle'
 ENGLISH_WORDS = set(words.words())
 
 nonword_regex = re.compile(r'\W+')
@@ -317,6 +318,41 @@ def json_to_list(filename):
     return d
 
 
+def scatter_plot(X, num_to_plot=None, labels=None, filename=None):
+    assert len(X.shape) == 2 and X.shape[1] >= 2
+    if num_to_plot is not None:
+        X = X[:num_to_plot]
+    if X.shape[1] > 2:
+        # X = TSNE(n_iter=5000).fit_transform(X)
+        X = PCA(2).fit_transform(X)
+    if labels is not None and len(set(labels)) < 6:
+        unique_labels = list(set(labels))
+        colors = ['r', 'g', 'b', 'm', 'k']
+    else:
+        colors = None
+
+    labeled = set()
+
+    fig = plt.figure()
+    for i, x in enumerate(X):
+        x0, x1 = x
+        if colors is None:
+            plt.scatter(x0, x1)
+        elif labels[i] in labeled:
+            plt.scatter(x0, x1, c=colors[unique_labels.index(labels[i])])
+        else:
+            plt.scatter(x0, x1, c=colors[unique_labels.index(labels[i])], label=labels[i])
+            labeled.add(labels[i])
+        if labels is not None and len(set(labels)) >= 6:
+            plt.annotate(labels[i], xy=(x0, x1), xytext=(5, 2), textcoords='offset points', ha='right', va='bottom')
+    if colors is not None:
+        plt.legend()
+    if filename is not None:
+        plt.savefig(filename)
+    else:
+        plt.show()
+
+
 def train_word2vec(filename, **kwargs):
     data = LineIterator(filename, tokenize)
     model = Word2Vec(data, workers=NUM_CPUS, **kwargs)
@@ -406,7 +442,7 @@ class Dictionary(TransformerMixin):
             else:
                 return sparse.vstack([self.transform(d) for d in doc])
         if doc and isinstance(doc[0], str):
-            doc = [self.word2id[word] for word in doc if word in self.word2id]
+            doc = [self.word2id[word] if word in self.word2id else 0 for word in doc]
         doc = sorted(doc) # sorting makes constructing lil_matrix more efficient
         vec = sparse.lil_matrix((1, self.num_words))
         for word in doc:
@@ -495,99 +531,97 @@ class BagOfWords(TransformerMixin):
                 x = self.pca.transform(x)
             return x
 
+class Text2VecSimple(TransformerMixin):
+    def __init__(self, X=None, labels=None, w2v=None):
+        assert w2v is not None or (X is not None and labels is not None)
+        if w2v is None:
+            assert X.shape[0] == len(labels) == len(set(labels))
+            self.X_dict = dict(zip(labels, X))
+            self.d = X.shape[1]
+        else:
+            self.X_dict = w2v
+            if isinstance(self.X_dict, str):
+                self.X_dict = load_pickle(self.X_dict)
+            self.d = self.X_dict.layer1_size
+        self.fit('')
 
-class Text2Vec:
-    def __init__(self, word2vec, pca_d=None, a=1):
+    def fit(self, text):
+        return self
+
+    def transform(self, text):
+        if isinstance(text, ITERS) and text and isinstance(text[0], ITERS):
+            return np.vstack([self.transform(t) for t in text])
+        v = np.zeros(self.d)
+        n = 0
+        for t in text:
+            if t in self.X_dict:
+                v += self.X_dict[t]
+                n += 1
+            else:
+                if 'UNK' in self.X_dict:
+                    v += self.X_dict['UNK']
+                    n += 1
+                print("{} not found".format(t))
+        v /= max(1, n)
+        return v
+
+
+class Text2Vec(TransformerMixin):
+    def __init__(self, word2vec=None, pca_d=None, remove_first=False, a=1):
+        assert word2vec is not None, "Must supply word2vec model for Text2Vec"
         self.pca_d = pca_d
         self.a = a
         self.word2vec = word2vec
+        if isinstance(self.word2vec, str):
+            self.word2vec = load_pickle(self.word2vec)
+        self.remove_first = remove_first
+        self.pca = None
+        self.u = None
 
     def fit(self, source):
 
-        word_counts = dict()
-        d = self.word2vec.layer1_size
+        if not isinstance(source, ITERS):
+            if os.path.exists(source):
+                source = LineIterator(source, tokenize)
+            else:
+                source = tokenize(source)
+        elif source and not isinstance(source[0], ITERS):
+            source = tokenize(source)
 
-        self.doc_index = dict()
-        self.source = source
+        self.dictionary = Dictionary(source)
+        self.d = self.word2vec.layer1_size
 
-        # Do a word count to figure out weighting
-        t0 = time.time()
-        if VERBOSE:
-            print("Counting words...")
+        word_mat = self.transform(source)
 
+        if self.pca_d is not None and self.pca_d < self.d:
+            self.pca = TruncatedSVD(self.pca_d).fit(word_mat)
 
-        # TODO can use a gensim dictionary for this... ?
-        num_docs = 0
-        num_words = 0
-        for doc in source:
-            num_docs += 1
-            for word in tokenize(doc):
-                num_words += 1
-                word_counts[word] = word_counts.get(word, 0) + 1
+        if self.remove_first:
+            self.u = PCA(1).fit_transform(word_mat.T)
 
-        self.num_words = num_words
-        self.word_counts = word_counts
+        return self
 
-        if VERBOSE:
-            print("Counted words. Took {}s".format(time.time() - t0))
-
-        t0 = time.time()
-
-        if VERBOSE:
-            print("Generating Text2Vec features...")
-
-        self.word_mat = np.zeros((num_docs, d))
-        for i, doc in enumerate(source):
-            self.doc_index[doc] = i
-            self.word_mat[i, :] = self.get_raw_vec_(doc)
-
-            if VERBOSE > 1 and i % 1000 == 0:
-                print("Processed {} documents...".format(i))
-
-        if VERBOSE:
-            print("Running PCA...")
-
-        if self.pca_d is not None and self.pca_d < d:
-            self.pca = TruncatedSVD(self.pca_d).fit(self.word_mat)
-            self.word_mat = self.pca.transform(self.word_mat)
-
-        #u = PCA(1).fit_transform(self.word_mat.T)
-        #self.word_mat -= np.dot(self.word_mat, np.outer(u, u))
-
-        if VERBOSE:
-            print("Generated features.  Took {}s".format(time.time() - t0))
-
-    def get_raw_vec_(self, text):
-        doc_v = np.zeros(self.word2vec.layer1_size)
+    def transform(self, doc, parallel=True):
+        if isinstance(doc, ITERS) and doc and isinstance(doc[0], ITERS):
+            if parallel:
+                return np.vstack(parallelize(self.transform, doc))
+            else:
+                return np.vstack([self.transform(d) for d in doc])
+        if isinstance(doc, str):
+            doc = tokenize(doc)
+        doc_v = np.zeros(self.d)
         doc_length = 0
-        for word in tokenize(text):
-            if word in self.word2vec and word in self.word_counts:
+        for word in doc:
+            if word in self.word2vec and word in self.dictionary.word2freq:
                 doc_length += 1
-                doc_v += (self.a / (self.a + self.word_counts[word] / self.num_words)) * self.word2vec[word]
+                doc_v += (self.a / (self.a + self.dictionary.word2freq[word] / self.dictionary.num_words)) * self.word2vec[word]
+        doc_v /= max(doc_length, 1)
 
-        if doc_length == 0:
-            doc_length = 1
-        doc_v = doc_v / doc_length 
-
+        if self.u is not None:
+            doc_v -= np.dot(np.outer(self.u, self.u), doc_v)
+        if self.pca is not None:
+            doc_v = self.pca.transform(doc_v.reshape(1, -1))
         return doc_v
-
-
-    def transform(self, doc):
-        if isinstance(doc, int):
-            return self.word_mat[doc, :]
-        elif isinstance(doc, ITERS):
-            return np.vstack([self.transform(s) for s in doc])
-        elif doc in self.doc_index:
-            return self.transform(self.doc_index[doc])
-        else:
-            doc_v = self.get_raw_vec_(doc)
-            if self.pca_d is not None:
-                doc_v = self.pca.transform(doc_v.reshape(1, -1))
-            return doc_v
-
-    def fit_transform(self, doc):
-        self.fit(doc)
-        return self.transform(doc)
 
 
 def word_cloud(doc, filename=None):
@@ -636,10 +670,12 @@ def parse_triples(doc, parallel=True):
         doc = [d if nonletter_regex.sub('', d) != '' else 'a' for d in doc]  # without this, empty strings get skipped rather than returning []
         doc = [fraction_regex.sub(r'\1\2', d) for d in doc]  # fractions screw up the parser...
         doc = [bad_characters.sub('', d) for d in doc]  # bad characters do too...
-        if len(doc) < 128 or parallel is False:
+        if len(doc) < 32 or parallel is False:
             return [[t[0][1] + t[1] + t[2][1] for t in next(d).triples()] for d in parser.raw_parse_sents(doc)]
         else:
             return [i for s in parallelize(parse_triples, partition(doc)) for i in s]
+    elif isinstance(doc, ITERS) and doc and isinstance(doc[0], ITERS):
+        return [parse_triples(d) for d in doc]
     elif nonletter_regex.sub('', doc) == '':
         return []
     else:
@@ -861,6 +897,15 @@ def test_directory():
     print(get_all_files('.'))
 
 
+def test_text2vec():
+    w2v = '/home/devin/smad/guns/news/classification/models/word2vec.pickle'
+    data = '/home/devin/data/smad/guns/news/clean/filtered_labeled170211.json'
+    data = [d['text'] for d in json_to_list(data)]
+    t2v = Text2Vec(w2v, pca_d=5, remove_first=True).fit(data[:20])
+    X = t2v.transform(tokenize(data[25:30]))
+    print(X)
+    print(X.shape)
+
 def test_all():
     test_tokenize()
     test_agree()
@@ -871,9 +916,10 @@ def test_all():
 
 
 def main():
-    test_directory()
+    test_text2vec()
 
 
 
 if __name__ == '__main__':
+
     main()
