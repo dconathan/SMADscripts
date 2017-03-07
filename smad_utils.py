@@ -14,6 +14,7 @@ import time
 from sklearn.decomposition import PCA
 from sklearn.decomposition import TruncatedSVD
 from sklearn.manifold import TSNE
+from sklearn.preprocessing import normalize
 import pickle
 from gensim.models.tfidfmodel import TfidfModel
 from gensim.models.word2vec import Word2Vec
@@ -64,6 +65,13 @@ news_location_regex = re.compile(r'\n\n[A-Za-z -:]+ -+\s')
 recipe_regex = re.compile(r'\scups?\s|\steaspoons?\s|\stablespoons?\s|\s[0-9]+ servings?\b')
 fraction_regex = re.compile(r'([0-9]+)/([0-9]+)')
 bad_characters = re.compile(r'[^a-zA-Z\'\-\s.,0-9:$?!@()/;#]')
+drawing_regex = re.compile(r'DRAWING[^\n]+')
+editor_regex = re.compile(r'To the Editor: ')
+ending_regex = re.compile(r'Follow The New York Times[^\n]+\n[^\n]+')
+author_regex = re.compile(r'[A-Z ]+\n')
+location_regex = re.compile(r'\w,? ?\w? ?\w?.?\w?.?\n')
+highlight_regex = re.compile(r'HIGLIGHT: ')
+
 
 parser = StanfordDependencyParser()
 ST_FILE = os.path.join(os.environ.get('NLTK_DATA', ''),
@@ -135,6 +143,9 @@ class LineIterator:
             j += 1
         return t
 
+    def __next__(self):
+        return next(self.iter_)
+
 
 ITERS = (list, tuple, Series, LineIterator)
 
@@ -157,12 +168,55 @@ def split_by_sentence(doc, parallel=True):
     return doc
 
 
+def sql_to_header(sql_file):
+    with open(sql_file) as f:
+        data = f.read()
+
+    data = data.lower()
+    data = data.split('select')[1].split('from')[0].split(',\n')
+
+    out = ''
+
+    for d in data:
+        d = d.strip()
+        if d != '':
+            if d[-1] == ',':
+                d = d[:-1]
+            if 'regexp_replace' in d:
+                d = d.split('(')[1].split(',')[0]
+            d = d.replace('`', '')
+            out += d + '\t'
+
+    out = out[:-1] + '\n'
+
+    with open(sql_file + '.header', 'w') as f:
+        f.write(out)
+
+
+def fix_dataframe(filename, sep=chr(1)):
+    if os.path.isdir(filename):
+        out_filename = filename.replace('/', '') + '.csv'
+        filename = get_all_files(filename)
+    elif os.path.isfile(filename):
+        out_filename = filename + ".csv"
+        filename = [filename]
+    else:
+        assert False, "need valid file or directory"
+
+    data = pd.DataFrame()
+    for f in filename:
+        data = data.append(pd.read_csv(f, sep=sep, header=None, quoting=csv.QUOTE_NONE))
+    data.to_csv(out_filename, sep='\t', quoting=csv.QUOTE_ALL, index=False, header=None)
+
+
 def tokenize(doc, parallel=True):
     if isinstance(doc, ITERS):
         if parallel:
             return parallelize(tokenize, doc)
         else:
             return [tokenize(d, False) for d in doc]
+    doc = doc.replace(chr(1), ' ')
+    doc = whitespace_regex.sub(' ', doc)
     doc = w_tokenizer.tokenize(doc.lower())
     doc = [nonletter_regex.sub('', d) for d in doc]
     doc = [d for d in doc if d]
@@ -192,6 +246,21 @@ def clean_tweet(doc, parallel=True):
     doc = http_regex.sub('httpurl', doc)
     return doc.strip()
 
+
+def file_to_regex(filename):
+    if not isinstance(filename, ITERS):
+        assert os.path.isfile(filename), '{} does not exist'.format(filename)
+        with open(filename) as f:
+            raw_data = f.readlines()
+        assert len(raw_data) > 0, '{} is empty'.format(filename)
+    else:
+        raw_data = filename
+    clean_data = [d.strip() + 's?' for d in raw_data]
+    regex = r'\b' + r'\b|\b'.join(clean_data) + r'\b'
+
+    return re.compile(regex)
+
+
 ENGLISH_THRESHOLD = 4
 
 
@@ -203,12 +272,29 @@ def filter_in_english(doc, parallel=True):
             doc = [filter_in_english(d, False) for d in doc]
         return [d for d in doc if d is not False]
     n = 0
-    for word in doc.lower().replace(chr(1), ' ').split():
+    for word in doc.lower().replace(chr(1), ' ').replace('"', ' ').split():
         if word in ENGLISH_WORDS and word != 'user':
             n += 1
             if n == ENGLISH_THRESHOLD:
                 return doc
     return False
+
+
+def filter_out_english(doc, parallel=True):
+    if isinstance(doc, ITERS):
+        if parallel:
+            doc = parallelize(filter_out_english, doc)
+        else:
+            doc = [filter_out_english(d, False) for d in doc]
+        return [d for d in doc if d is not False]
+    n = 0
+    for word in doc.lower().replace(chr(1), ' ').replace('"', ' ').split():
+        if word in ENGLISH_WORDS and word != 'user':
+            n += 1
+            if n == ENGLISH_THRESHOLD:
+                return False
+    return doc
+
 
 
 def filter_out_short(doc, parallel=True):
@@ -244,7 +330,7 @@ def filter_out_regex(regex, doc, parallel=True):
         else:
             doc = [filter_out_regex(regex, d, False) for d in doc]
         return [d for d in doc if d is not False]
-    if bool(regex.search(doc)):
+    if bool(regex.search(doc.lower())):
         return False
     else:
         return doc
@@ -257,23 +343,36 @@ def filter_in_regex(regex, doc, parallel=True):
         else:
             doc = [filter_in_regex(regex, d, False) for d in doc]
         return [d for d in doc if d is not False]
-    if bool(regex.search(doc)):
+    if bool(regex.search(doc.lower())):
         return doc
     else:
         return False
 
 
-def filter_list(l, doc, parallel=True):
+def filter_out_list(l, doc, parallel=True):
     if isinstance(doc, ITERS):
         if parallel:
-            doc = parallelize((filter_list, (l,)), doc)
+            doc = parallelize((filter_out_list, (l,)), doc)
         else:
-            doc = [filter_list(l, d, False) for d in doc]
+            doc = [filter_out_list(l, d, False) for d in doc]
         return [d for d in doc if d is not False]
     for w in l:
         if w in doc:
             return False
     return doc
+
+
+def filter_in_list(l, doc, parallel=True):
+    if isinstance(doc, ITERS):
+        if parallel:
+            doc = parallelize((filter_in_list, (l,)), doc)
+        else:
+            doc = [filter_in_list(l, d, False) for d in doc]
+        return [d for d in doc if d is not False]
+    for w in l:
+        if w in doc:
+            return doc
+    return False
 
 
 def stem(doc, parallel=True):
@@ -305,17 +404,30 @@ def join_lines(doc, parallel=True):
     return '\n'.join(doc)
 
 
-def list_to_json(l, filename):
+def save_json(l, filename):
+    if not isinstance(l, ITERS):
+        l = [l]
     with open(filename, 'w') as f:
         for j in l:
             f.write(_json.dumps(j) + '\n')
 
 
-def json_to_list(filename):
+def load_json(filename):
     with open(filename) as f:
         d = f.readlines()
-    d = [_json.loads(j) for j in d]
+    try:
+        d = [_json.loads(j) for j in d]
+    except:
+        pass
+    if len(d) == 1:
+        d = d[0]
     return d
+
+
+def file_to_list(filename):
+    with open(filename) as f:
+        d = f.readlines()
+    return [j.strip() for j in d]
 
 
 def scatter_plot(X, num_to_plot=None, labels=None, filename=None):
@@ -323,7 +435,7 @@ def scatter_plot(X, num_to_plot=None, labels=None, filename=None):
     if num_to_plot is not None:
         X = X[:num_to_plot]
     if X.shape[1] > 2:
-        # X = TSNE(n_iter=5000).fit_transform(X)
+        #X = TSNE(n_iter=5000, init='pca').fit_transform(X)
         X = PCA(2).fit_transform(X)
     if labels is not None and len(set(labels)) < 6:
         unique_labels = list(set(labels))
@@ -333,22 +445,29 @@ def scatter_plot(X, num_to_plot=None, labels=None, filename=None):
 
     labeled = set()
 
-    fig = plt.figure()
+    lw = .2
+    fontsize = 10
+
+    fig = plt.figure(figsize=(10,10), dpi=200)
     for i, x in enumerate(X):
         x0, x1 = x
         if colors is None:
-            plt.scatter(x0, x1)
+            plt.scatter(x0, x1, lw=lw)
         elif labels[i] in labeled:
-            plt.scatter(x0, x1, c=colors[unique_labels.index(labels[i])])
+            plt.scatter(x0, x1, c=colors[unique_labels.index(labels[i])], lw=lw)
         else:
-            plt.scatter(x0, x1, c=colors[unique_labels.index(labels[i])], label=labels[i])
+            plt.scatter(x0, x1, c=colors[unique_labels.index(labels[i])], label=labels[i], lw=lw)
             labeled.add(labels[i])
         if labels is not None and len(set(labels)) >= 6:
-            plt.annotate(labels[i], xy=(x0, x1), xytext=(5, 2), textcoords='offset points', ha='right', va='bottom')
+            if labels[i] == 'VBNdobjNN':
+                plt.annotate(labels[i], xy=(x0, x1), xytext=(30, 2), textcoords='offset points', ha='right', va='bottom', fontsize=fontsize)
+            else:
+                plt.annotate(labels[i], xy=(x0, x1), xytext=(5, 2), textcoords='offset points', ha='right', va='bottom', fontsize=fontsize)
+    plt.axis('off')
     if colors is not None:
         plt.legend()
     if filename is not None:
-        plt.savefig(filename)
+        plt.savefig(filename, bbox_inches='tight')
     else:
         plt.show()
 
@@ -361,36 +480,39 @@ def train_word2vec(filename, **kwargs):
 
 
 class Dictionary(TransformerMixin):
-    def __init__(self, docs=None, stop_words=None, size=None):
+    def __init__(self, docs=None, stopwords=None, size=None, archive=False):
 
         self.size = size
+        self.archive = archive  # archive is necessary for doing stuff like skip-gram sets or transform_all()
         self.word2id = {'UNK': 0}
         self.id2word = ['UNK']
-        self.doc_ids = list()
-        self.word_ids = list()
-        self.word2docfreq = {'UNK': 0}
-        self.word2freq = {'UNK': 0}
+        self.doc_ids = None
+        self.word_ids = None
+        self.word2docfreq = {'UNK': 1}
+        self.word2freq = {'UNK': 1}
         self.num_docs = 0
         self.num_words = 0
-        if stop_words is None:
-            self.stop_words = set()
+        if stopwords is None:
+            self.stopwords = set()
         else:
-            self.stop_words = set(stop_words)
+            self.stopwords = set(stopwords)
 
         if docs is not None:
             self.fit(docs)
         self.index = 0
 
-    def fit(self, docs):
+    def fit(self, docs, archive=None):
+        if archive is not None:
+            self.archive = archive
         self.word2docfreq['UNK'] = len(docs)
         assert docs, "argument to Dictionary.fit must not be empty"
-        assert isinstance(docs[0], ITERS)  and docs[0] and isinstance(docs[0][0], str),\
+        assert isinstance(docs[0], ITERS) and docs[0] and isinstance(docs[0][0], str),\
             "argument to Dictionary.fit must be a list of nonempty lists of tokens"
         for doc in docs:
             self.num_docs += 1
             doc_words = set()
             for word in doc:
-                if word not in self.stop_words:
+                if word not in self.stopwords:
                     self.word2freq[word] = self.word2freq.get(word, 0) + 1
                     doc_words.add(word)
             for word in doc_words:
@@ -402,11 +524,14 @@ class Dictionary(TransformerMixin):
         self.word2freq['UNK'] = unk_freq
         self.word2id = dict([(word, i) for i, word in enumerate(self.id2word)])
         self.num_words = len(self.id2word)
-        for i, doc in enumerate(docs):
-            for word in doc:
-                if word in self.word2id:
-                    self.doc_ids.append(i)
-                    self.word_ids.append(self.word2id[word])
+        if self.archive:
+            self.doc_ids = list()
+            self.word_ids = list()
+            for i, doc in enumerate(docs):
+                for word in doc:
+                    if word in self.word2id:
+                        self.doc_ids.append(i)
+                        self.word_ids.append(self.word2id[word])
         if self.size is not None:
             self.prune()
         return self
@@ -418,9 +543,10 @@ class Dictionary(TransformerMixin):
             self.size = size
         if size < self.num_words:
             delete_ids = set(range(self.num_words)[size:])
-            for i, word in enumerate(self.word_ids):
-                if word in delete_ids:
-                    self.word_ids[i] = 0
+            if self.archive:
+                for i, word in enumerate(self.word_ids):
+                    if word in delete_ids:
+                        self.word_ids[i] = 0
             for i in delete_ids:
                 word = self.id2word[i]
                 self.id2word[i] = None
@@ -443,18 +569,22 @@ class Dictionary(TransformerMixin):
                 return sparse.vstack([self.transform(d) for d in doc])
         if doc and isinstance(doc[0], str):
             doc = [self.word2id[word] if word in self.word2id else 0 for word in doc]
-        doc = sorted(doc) # sorting makes constructing lil_matrix more efficient
+        return self._transform(doc)
+
+    def _transform(self, doc):
+        doc = sorted(doc)  # sorting makes constructing lil_matrix more efficient
         vec = sparse.lil_matrix((1, self.num_words))
         for word in doc:
             vec[0, word] += 1
-        return vec
+        return normalize(vec)
 
     def transform_all(self):
+        if not self.archive:
+            assert False, "Fit must be run with archive=True in order to run transform_all()"
         docs = [[] for i in range(self.num_docs)]
         for doc_id, word_id in zip(self.doc_ids, self.word_ids):
             docs[doc_id].append(word_id)
         return self.transform(docs)
-
 
     def generate_batch(self, batch_size, window_size, mode='pv'):
         assert batch_size % window_size == 0, 'batch_size must be a multiple of window_size'
@@ -484,16 +614,26 @@ class Dictionary(TransformerMixin):
         return batch, labels
 
 
-class BagOfWords(TransformerMixin):
-    def __init__(self, pca=None):
-        self.pca = pca
+class Tfidf(Dictionary):
+    def __init__(self, docs=None, stopwords=None, pca_d=None, size=None, archive=False):
+        if pca_d is None:
+            self.pca = None
+        else:
+            self.pca = PCA(pca_d)
+        super().__init__(docs, stopwords, size, archive)
 
-    def fit(self, source):
-        if isinstance(source, str):
+    def fit(self, docs, archive=None):
+        super().fit(docs, archive)
+        if self.pca is not None and self.pca.get_params()['n_components'] > self.size:
             pass
+        return self
 
-    def transform(self, doc):
-        pass
+    def _transform(self, doc):
+        doc = sorted(doc)  # sorting makes constructing lil_matrix more efficient
+        vec = sparse.lil_matrix((1, self.num_words))
+        for word in doc:
+            vec[0, word] += (1 + np.log(self.num_docs / self.word2docfreq[self.id2word[word]]))
+        return normalize(vec)
 
 
 class BagOfWords(TransformerMixin):
@@ -532,7 +672,8 @@ class BagOfWords(TransformerMixin):
             return x
 
 class Text2VecSimple(TransformerMixin):
-    def __init__(self, X=None, labels=None, w2v=None):
+    def __init__(self, X=None, labels=None, w2v=None, unk=True, weights=None):
+        self.unk = unk
         assert w2v is not None or (X is not None and labels is not None)
         if w2v is None:
             assert X.shape[0] == len(labels) == len(set(labels))
@@ -543,9 +684,27 @@ class Text2VecSimple(TransformerMixin):
             if isinstance(self.X_dict, str):
                 self.X_dict = load_pickle(self.X_dict)
             self.d = self.X_dict.layer1_size
-        self.fit('')
+        self.dictionary = None
+
+        self.weights = weights
+        if self.weights is None:
+            self.weights = 'mean'
+        if self.weights == 'tfidf':
+            
+            def _get_weight(word):
+                if word not in self.dictionary.word2freq:
+                    word = 'UNK'
+                return (1 + np.log(self.dictionary.word2freq[word]) * 
+                        np.log(self.dictionary.num_docs/self.dictionary.word2docfreq[word]))
+        else:
+            def _get_weight(word):
+                return 1
+
+        self._get_weight = _get_weight
+
 
     def fit(self, text):
+        self.dictionary = Dictionary(text)
         return self
 
     def transform(self, text):
@@ -555,13 +714,12 @@ class Text2VecSimple(TransformerMixin):
         n = 0
         for t in text:
             if t in self.X_dict:
-                v += self.X_dict[t]
+                v += np.ravel(self.X_dict[t]) * self._get_weight(t)
                 n += 1
             else:
-                if 'UNK' in self.X_dict:
-                    v += self.X_dict['UNK']
+                if 'UNK' in self.X_dict and self.unk:
+                    v += self.X_dict['UNK'] * self._get_weight('UNK')
                     n += 1
-                print("{} not found".format(t))
         v /= max(1, n)
         return v
 
@@ -706,6 +864,12 @@ def extract_news(filename, parallel=True):
     data = news_location_regex.sub('\n\n', data)
     data = email_address_regex.sub('\n', data)
     data = news_meta_regex.sub('\n', data)
+    data = drawing_regex.sub('\n', data)
+    #data = location_regex.sub('\n', data)
+    data = author_regex.sub('\n', data)
+    data = editor_regex.sub('\n', data)
+    data = highlight_regex.sub('\n', data)
+    data = ending_regex.sub('\n', data)
     return [whitespace_regex.sub(' ', d).strip() for d in data.split('\n\n\n') if len(d.split()) > 300 and len(recipe_regex.findall(d)) < 5]
 
 
