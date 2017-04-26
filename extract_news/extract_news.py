@@ -53,6 +53,7 @@ URL_RE = re.compile(r'URL:')
 DATE_RE = re.compile(r'\S+ \d+, \d+ ' + DAY_RE.pattern + r'( \d+:\d+ [AP]M \S*)?', re.IGNORECASE)
 HEADERFOOTER_RE = re.compile(r'( ){3}.*\r?\n')
 META_RE = re.compile(r'[A-Z\-]+:.*\r?\n')
+FIVE_OR_MORE_SPACES = re.compile(r'( ){5}[ ]*')
 
 
 DATE_FORMAT = '%B %d, %Y'
@@ -94,11 +95,14 @@ def extract_news_string(raw_text, source=''):
     if DEBUG:
         raw_text = raw_text[:3]
 
-    for rt in raw_text:
+    for i, rt in enumerate(raw_text):
 
         article_data = dict()
 
-        article_data['source'] = source
+        article_data['source'] = os.path.split(source)[-1]
+        article_data['source_index'] = i
+
+        article = delete_all(rt, FIVE_OR_MORE_SPACES)
 
         article, meta = extract_and_delete_all(rt, META_RE)
 
@@ -111,6 +115,13 @@ def extract_news_string(raw_text, source=''):
         header = [h.strip() for h in SINGLE_NEWLINE_RE.split(header) if h]
 
         newspaper = header.pop(0)
+
+        # This assumes the blog section is below newspaper, which it is in case of The New York Times Blogs!
+        if 'Blogs' in newspaper:
+            blog_section = header.pop(0)
+        else:
+            blog_section = ''
+
         date = header.pop(0)
         date = delete_regex(delete_regex(date, DAY_RE), TIME_RE).strip()
         date = dt.datetime.strptime(date, DATE_FORMAT).date()
@@ -122,7 +133,7 @@ def extract_news_string(raw_text, source=''):
 
         header, edition = extract_and_delete_regex(header, EDITION_RE)
         article_data['edition'] = edition.strip()
-        header, blog_section = extract_and_delete_regex(header, BLOG_RE)
+
         article_data['blog_section'] = blog_section.strip()
 
         meta, article_data['byline'] = extract_meta(meta, BYLINE_RE)
@@ -146,6 +157,7 @@ def extract_news_string(raw_text, source=''):
         article = delete_all(article + '\n', EMAIL_LINE_RE)
 
         article_data['article'] = clean_article(article)
+        article_data['paragraphs'] = article_data['article'].split('\n\n')
 
         clean_data.append(article_data)
 
@@ -218,22 +230,32 @@ def extract_meta(string, regex):
 
 def extract_paragraph(string):
     out = ''
-    while True:
-        string, temp = extract_and_delete_regex(string, ONE_LINE_RE)
+    i = 0
+    string, p = extract_and_delete_regex(string, ONE_LINE_RE)
+    return p.strip(), string
+
+    ''' 
         out += temp
+        print(i, temp)
+        i += 1
         if temp == '' or not string or string.replace('\r', '')[0] == '\n':
             break
-    return ' '.join(out.splitlines()).strip(), string
+    print()
+    print(out)
+    print()
+    return '\n\n'.join(out.splitlines()).strip(), string
+    '''
 
 
 def clean_article(article):
-    article = article.strip() + '\n'
+    article = (article.strip() + '\n').replace("''", '"')
     paragraphs = []
     while True:
         p, article = extract_paragraph(article)
-        if p == '':
+        if p != '':
+            paragraphs.append(p)
+        if article.strip() == '':
             break
-        paragraphs.append(p)
     return '\n\n'.join(paragraphs)
 
 
