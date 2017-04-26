@@ -67,7 +67,7 @@ def main(data, train, test):
         clf = SVC()
 
         # perform the search
-        search = RandomizedSearchCV(clf, clf_params, n_iter=4, cv=split, n_jobs=-1).fit(X, train_labels + test_labels)
+        search = RandomizedSearchCV(clf, clf_params, n_iter=64, cv=split, n_jobs=-1).fit(X, train_labels + test_labels)
 
         # grab the best performing classifier/params/score
         clf = search.best_estimator_
