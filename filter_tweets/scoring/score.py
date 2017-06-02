@@ -6,10 +6,29 @@ from ml_utils import load_data
 from ml_utils import score
 
 
+def fix_data(text, labels):
+
+    text_out = []
+    labels_out = []
+
+    for t, l in zip(text, labels):
+        if l[5] != 1:
+            text_out.append(t)
+            labels_out.append(l)
+
+    def fix_text(t):
+        return t.split('RETWEET,')[0].strip().split('TWEET:')[1].strip()
+
+    text_out = [fix_text(t) for t in text_out]
+
+    return text_out, labels_out
+
+
 def main(data, train, test=None):
 
     classes_to_score = [0, 1, 2, 3]
     train_text, train_labels, score_text, score_ids = load_data(data, train, test, classes_to_score, scoring=True)
+    train_text, train_labels = fix_data(train_text, train_labels)
     score(train_text, train_labels, score_text, score_ids)
 
 
